@@ -27,4 +27,28 @@ fi
 
 systemctl daemon-reload
 
+echo ""
+echo "================================================"
+echo " 選用清理項目（可保留供下次安裝使用）"
+echo "================================================"
+
+INSTALL_DIR="$(dirname "$(realpath "$0")")"
+
+ask_remove() {
+    local desc="$1"
+    local path="$2"
+    if [ -e "$path" ]; then
+        read -rp "🗑️  是否刪除 ${desc} (${path})？[y/N] " ans
+        case "$ans" in
+            [Yy]*) rm -f "$path" && echo "   已刪除。" ;;
+            *)     echo "   保留。" ;;
+        esac
+    fi
+}
+
+ask_remove "打卡狀態檔 bot_status.json"  "${INSTALL_DIR}/bot_status.json"
+ask_remove "機器人日誌 autoclock_bot.log" "${INSTALL_DIR}/autoclock_bot.log"
+ask_remove "例外打卡日清單 exceptions.txt" "${INSTALL_DIR}/exceptions.txt"
+
+echo ""
 echo "✅ 服務已完全移除。"

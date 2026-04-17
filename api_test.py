@@ -400,7 +400,83 @@ def calculate_sleep_duration(status):
     return max(1, secs_until - 1)
 
 
-def main_loop():
+def _handle_clock_action(status: dict, action_type: str, label: str):
+    """上班/下班打卡的通用觸發邏輯（含補打卡與重試）。
+
+    action_type: "in" 或 "out"
+    label:       "上班" 或 "下班"（用於日誌訊息）
+    """
+    now = datetime.now()
+    done_key = f"clock_{action_type}_done"
+    retries_key = f"clock_{action_type}_retries"
+    window_start = status[f"clock_{action_type}_window_start"]
+    window_end = status[f"clock_{action_type}_window_end"]
+    scheduled = status[f"scheduled_{action_type}"]
+
+    if status.get(done_key):
+        return
+
+    if now > window_end:
+        hours_late = (now - window_end).total_seconds() / 3600
+        if hours_late > LATE_ATTEMPT_GRACE_HOURS:
+            logging.error(
+                f"❌ {label}打卡窗口已關閉超過 {LATE_ATTEMPT_GRACE_HOURS} 小時，"
+                "不再嘗試補打卡。請手動補登！"
+            )
+            status[done_key] = True
+            save_status(status)
+            return
+
+        retries = status.get(retries_key, 0)
+        if retries >= MAX_API_RETRIES:
+            status[done_key] = True
+            logging.error("❌ 偵測到先前重試耗盡但狀態未儲存，標記為已處理。請手動補登！")
+            save_status(status)
+            return
+
+        mins_late = hours_late * 60
+        logging.warning(
+            f"⏰ {label}打卡窗口已關閉 {mins_late:.0f} 分鐘，嘗試補打卡 "
+            f"(第 {retries + 1}/{MAX_API_RETRIES} 次)..."
+        )
+        success = perform_clock_action_api(action_type)
+        if success:
+            status[done_key] = True
+            logging.warning("⚠️ 補打卡成功，但打卡時間已延遲，請留意考勤記錄。")
+        else:
+            status[retries_key] = retries + 1
+            remaining = MAX_API_RETRIES - status[retries_key]
+            if remaining > 0:
+                logging.warning(f"⚠️ 補打卡失敗，將稍後重試 (剩餘次數: {remaining})")
+            else:
+                status[done_key] = True
+                logging.error("❌ 補打卡已達最大重試次數，放棄。請手動補登！")
+        save_status(status)
+
+    elif window_start <= now >= scheduled:
+        retries = status.get(retries_key, 0)
+        if retries >= MAX_API_RETRIES:
+            status[done_key] = True
+            save_status(status)
+            return
+
+        logging.info(f"⏰ 到達{label}打卡時間，準備執行 (第 {retries + 1}/{MAX_API_RETRIES} 次)...")
+        success = perform_clock_action_api(action_type)
+        if success:
+            status[done_key] = True
+            logging.info(f"✔️ {label}打卡成功。")
+        else:
+            status[retries_key] = retries + 1
+            remaining = MAX_API_RETRIES - status[retries_key]
+            if remaining > 0:
+                logging.warning(f"⚠️ {label}打卡失敗，將在下次循環重試 (剩餘次數: {remaining})")
+            else:
+                status[done_key] = True
+                logging.error(f"❌ {label}打卡已達最大重試次數，放棄。請手動處理！")
+        save_status(status)
+
+
+
     status = load_status()
     if not status.get("skipped"):
         logging.info(
@@ -456,188 +532,27 @@ def main_loop():
 
         now = datetime.now()
 
-        # --- 上班前 VPN 連線預檢查 ---
-        if (
-            not status.get("skipped")
-            and not status.get("clock_in_done")
-            and not status.get("pre_check_in_done")
-        ):
-            pre_check_time = status["scheduled_in"] - timedelta(
-                minutes=PRE_CHECK_MINUTES
-            )
-            if now >= pre_check_time:
-                logging.info(
-                    f"ℹ️  到達上班打卡前 {PRE_CHECK_MINUTES} 分鐘，執行 VPN 連線預檢查..."
-                )
-                if not check_intranet_connection():
-                    launch_vpn_monitor()
-                else:
-                    logging.info("✔️  VPN 連線預檢查成功。")
-                status["pre_check_in_done"] = True
-                save_status(status)
-
-        # --- 下班前 VPN 連線預檢查 ---
-        if (
-            not status.get("skipped")
-            and not status.get("clock_out_done")
-            and not status.get("pre_check_out_done")
-        ):
-            pre_check_time = status["scheduled_out"] - timedelta(
-                minutes=PRE_CHECK_MINUTES
-            )
-            if now >= pre_check_time:
-                logging.info(
-                    f"ℹ️  到達下班打卡前 {PRE_CHECK_MINUTES} 分鐘，執行 VPN 連線預檢查..."
-                )
-                if not check_intranet_connection():
-                    launch_vpn_monitor()
-                else:
-                    logging.info("✔️  VPN 連線預檢查成功。")
-                status["pre_check_out_done"] = True
-                save_status(status)
-
-        # --- 上班打卡觸發（含補打卡與重試邏輯）---
-        if not status["clock_in_done"]:
-            if now > status["clock_in_window_end"]:
-                hours_late = (now - status["clock_in_window_end"]).total_seconds() / 3600
-                if hours_late <= LATE_ATTEMPT_GRACE_HOURS:
-                    retries = status.get("clock_in_retries", 0)
-                    if retries < MAX_API_RETRIES:
-                        mins_late = hours_late * 60
-                        logging.warning(
-                            f"⏰ 上班打卡窗口已關閉 {mins_late:.0f} 分鐘，嘗試補打卡 "
-                            f"(第 {retries + 1}/{MAX_API_RETRIES} 次)..."
-                        )
-                        success = perform_clock_action_api("in")
-                        if success:
-                            status["clock_in_done"] = True
-                            logging.warning("⚠️ 補打卡成功，但打卡時間已延遲，請留意考勤記錄。")
-                        else:
-                            status["clock_in_retries"] = retries + 1
-                            remaining = MAX_API_RETRIES - status["clock_in_retries"]
-                            if remaining > 0:
-                                logging.warning(
-                                    f"⚠️ 補打卡失敗，將稍後重試 (剩餘次數: {remaining})"
-                                )
-                            else:
-                                status["clock_in_done"] = True
-                                logging.error(
-                                    "❌ 補打卡已達最大重試次數，放棄。請手動補登！"
-                                )
-                        save_status(status)
-                    else:
-                        status["clock_in_done"] = True
-                        logging.error(
-                            "❌ 偵測到先前重試耗盡但狀態未儲存，標記為已處理。請手動補登！"
-                        )
-                        save_status(status)
-                else:
-                    logging.error(
-                        f"❌ 上班打卡窗口已關閉超過 {LATE_ATTEMPT_GRACE_HOURS} 小時，"
-                        "不再嘗試補打卡。請手動補登！"
-                    )
-                    status["clock_in_done"] = True
-                    save_status(status)
-
-            elif status["clock_in_window_start"] <= now and now >= status["scheduled_in"]:
-                retries = status.get("clock_in_retries", 0)
-                if retries < MAX_API_RETRIES:
+        # --- VPN 連線預檢查（上班 / 下班各一次）---
+        for action_type, label in (("in", "上班"), ("out", "下班")):
+            done_key = f"clock_{action_type}_done"
+            pre_key = f"pre_check_{action_type}_done"
+            sched_key = f"scheduled_{action_type}"
+            if not status.get(done_key) and not status.get(pre_key):
+                pre_check_time = status[sched_key] - timedelta(minutes=PRE_CHECK_MINUTES)
+                if now >= pre_check_time:
                     logging.info(
-                        f"⏰ 到達上班打卡時間，準備執行 (第 {retries + 1}/{MAX_API_RETRIES} 次)..."
+                        f"ℹ️  到達{label}打卡前 {PRE_CHECK_MINUTES} 分鐘，執行 VPN 連線預檢查..."
                     )
-                    success = perform_clock_action_api("in")
-                    if success:
-                        status["clock_in_done"] = True
-                        logging.info("✔️ 上班打卡成功。")
+                    if not check_intranet_connection():
+                        launch_vpn_monitor()
                     else:
-                        status["clock_in_retries"] = retries + 1
-                        remaining = MAX_API_RETRIES - status["clock_in_retries"]
-                        if remaining > 0:
-                            logging.warning(
-                                f"⚠️ 上班打卡失敗，將在下次循環重試 (剩餘次數: {remaining})"
-                            )
-                        else:
-                            status["clock_in_done"] = True
-                            logging.error(
-                                "❌ 上班打卡已達最大重試次數，放棄。請手動處理！"
-                            )
-                    save_status(status)
-                else:
-                    status["clock_in_done"] = True
+                        logging.info("✔️  VPN 連線預檢查成功。")
+                    status[pre_key] = True
                     save_status(status)
 
-        # --- 下班打卡觸發（含補打卡與重試邏輯）---
-        if not status["clock_out_done"]:
-            if now > status["clock_out_window_end"]:
-                hours_late = (now - status["clock_out_window_end"]).total_seconds() / 3600
-                if hours_late <= LATE_ATTEMPT_GRACE_HOURS:
-                    retries = status.get("clock_out_retries", 0)
-                    if retries < MAX_API_RETRIES:
-                        mins_late = hours_late * 60
-                        logging.warning(
-                            f"⏰ 下班打卡窗口已關閉 {mins_late:.0f} 分鐘，嘗試補打卡 "
-                            f"(第 {retries + 1}/{MAX_API_RETRIES} 次)..."
-                        )
-                        success = perform_clock_action_api("out")
-                        if success:
-                            status["clock_out_done"] = True
-                            logging.warning("⚠️ 補打卡成功，但打卡時間已延遲，請留意考勤記錄。")
-                        else:
-                            status["clock_out_retries"] = retries + 1
-                            remaining = MAX_API_RETRIES - status["clock_out_retries"]
-                            if remaining > 0:
-                                logging.warning(
-                                    f"⚠️ 補打卡失敗，將稍後重試 (剩餘次數: {remaining})"
-                                )
-                            else:
-                                status["clock_out_done"] = True
-                                logging.error(
-                                    "❌ 補打卡已達最大重試次數，放棄。請手動補登！"
-                                )
-                        save_status(status)
-                    else:
-                        status["clock_out_done"] = True
-                        logging.error(
-                            "❌ 偵測到先前重試耗盡但狀態未儲存，標記為已處理。請手動補登！"
-                        )
-                        save_status(status)
-                else:
-                    logging.error(
-                        f"❌ 下班打卡窗口已關閉超過 {LATE_ATTEMPT_GRACE_HOURS} 小時，"
-                        "不再嘗試補打卡。請手動補登！"
-                    )
-                    status["clock_out_done"] = True
-                    save_status(status)
-
-            elif (
-                status["clock_out_window_start"] <= now
-                and now >= status["scheduled_out"]
-            ):
-                retries = status.get("clock_out_retries", 0)
-                if retries < MAX_API_RETRIES:
-                    logging.info(
-                        f"⏰ 到達下班打卡時間，準備執行 (第 {retries + 1}/{MAX_API_RETRIES} 次)..."
-                    )
-                    success = perform_clock_action_api("out")
-                    if success:
-                        status["clock_out_done"] = True
-                        logging.info("✔️ 下班打卡成功。")
-                    else:
-                        status["clock_out_retries"] = retries + 1
-                        remaining = MAX_API_RETRIES - status["clock_out_retries"]
-                        if remaining > 0:
-                            logging.warning(
-                                f"⚠️ 下班打卡失敗，將在下次循環重試 (剩餘次數: {remaining})"
-                            )
-                        else:
-                            status["clock_out_done"] = True
-                            logging.error(
-                                "❌ 下班打卡已達最大重試次數，放棄。請手動處理！"
-                            )
-                    save_status(status)
-                else:
-                    status["clock_out_done"] = True
-                    save_status(status)
+        # --- 打卡觸發（上班 / 下班，含補打卡與重試）---
+        for action_type, label in (("in", "上班"), ("out", "下班")):
+            _handle_clock_action(status, action_type, label)
 
         sleep_secs = calculate_sleep_duration(status)
         if sleep_secs > 120:
