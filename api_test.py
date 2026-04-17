@@ -1,16 +1,18 @@
-# --- OVT 自動打卡機器人 - v5.7 Linux 背景服務版 ---
+# --- OVT 自動打卡機器人 - v5.8 Linux 背景服務版 ---
 import os
 import time
 import sys
+import ssl
+import json
 import argparse
 import configparser
 import random
 import logging
 import logging.handlers
-import json
 import platform
 import requests
 import subprocess
+import urllib.request
 from bs4 import BeautifulSoup
 from datetime import datetime, date, timedelta
 
@@ -60,6 +62,32 @@ try:
 except Exception:
     logging.error("❌ 讀取 account.config 失敗！", exc_info=True)
     sys.exit(1)
+
+# --- Telegram 通知設定（從 account.config 讀取，未設定時靜默停用）---
+TELEGRAM_TOKEN: str = config.get("telegram", "token", fallback="")
+TELEGRAM_CHAT_ID: str = config.get("telegram", "chat_id", fallback="")
+
+
+def send_telegram(message: str):
+    """發送 Telegram 通知；若未設定 Token 或網路錯誤，靜默略過不影響打卡流程。"""
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+    try:
+        payload = json.dumps({
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": message,
+            "parse_mode": "HTML",
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        ctx = ssl.create_default_context()
+        with urllib.request.urlopen(req, timeout=10, context=ctx):
+            pass
+    except Exception:
+        logging.warning("⚠️ Telegram 通知發送失敗（不影響打卡流程）")
 
 # --- API Interaction ---
 PROD_BASE_URL = "https://tw-eip.ovt.com"
@@ -423,6 +451,11 @@ def _handle_clock_action(status: dict, action_type: str, label: str):
                 f"❌ {label}打卡窗口已關閉超過 {LATE_ATTEMPT_GRACE_HOURS} 小時，"
                 "不再嘗試補打卡。請手動補登！"
             )
+            send_telegram(
+                f"❌ <b>{label}打卡放棄</b>\n"
+                f"窗口已關閉超過 {LATE_ATTEMPT_GRACE_HOURS} 小時，請手動補登！\n"
+                f"⏰ {now.strftime('%Y-%m-%d %H:%M:%S')}"
+            )
             status[done_key] = True
             save_status(status)
             return
@@ -443,6 +476,11 @@ def _handle_clock_action(status: dict, action_type: str, label: str):
         if success:
             status[done_key] = True
             logging.warning("⚠️ 補打卡成功，但打卡時間已延遲，請留意考勤記錄。")
+            send_telegram(
+                f"⚠️ <b>{label}補打卡成功</b>（延遲 {mins_late:.0f} 分鐘）\n"
+                f"打卡時間已延遲，請留意考勤記錄。\n"
+                f"⏰ {now.strftime('%Y-%m-%d %H:%M:%S')}"
+            )
         else:
             status[retries_key] = retries + 1
             remaining = MAX_API_RETRIES - status[retries_key]
@@ -451,6 +489,11 @@ def _handle_clock_action(status: dict, action_type: str, label: str):
             else:
                 status[done_key] = True
                 logging.error("❌ 補打卡已達最大重試次數，放棄。請手動補登！")
+                send_telegram(
+                    f"❌ <b>{label}補打卡失敗</b>\n"
+                    f"已達最大重試次數（{MAX_API_RETRIES} 次），請手動補登！\n"
+                    f"⏰ {now.strftime('%Y-%m-%d %H:%M:%S')}"
+                )
         save_status(status)
 
     elif window_start <= now >= scheduled:
@@ -465,6 +508,10 @@ def _handle_clock_action(status: dict, action_type: str, label: str):
         if success:
             status[done_key] = True
             logging.info(f"✔️ {label}打卡成功。")
+            send_telegram(
+                f"✅ <b>{label}打卡成功</b>\n"
+                f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            )
         else:
             status[retries_key] = retries + 1
             remaining = MAX_API_RETRIES - status[retries_key]
@@ -473,10 +520,15 @@ def _handle_clock_action(status: dict, action_type: str, label: str):
             else:
                 status[done_key] = True
                 logging.error(f"❌ {label}打卡已達最大重試次數，放棄。請手動處理！")
+                send_telegram(
+                    f"❌ <b>{label}打卡失敗</b>\n"
+                    f"已達最大重試次數（{MAX_API_RETRIES} 次），請手動處理！\n"
+                    f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                )
         save_status(status)
 
 
-
+def main_loop():
     status = load_status()
     if not status.get("skipped"):
         logging.info(
@@ -570,6 +622,12 @@ def wait_for_vpn_at_startup():
         "🔄 請手動確認 VPN 連線狀態。機器人將等待最多 "
         f"{STARTUP_VPN_MAX_WAIT // 60} 分鐘..."
     )
+    send_telegram(
+        f"⚠️ <b>VPN 連線失敗</b>\n"
+        f"打卡機器人偵測到內網無法連通（10.3.10.2）。\n"
+        f"正在等待，最多 {STARTUP_VPN_MAX_WAIT // 60} 分鐘。\n"
+        f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    )
     launch_vpn_monitor()
 
     elapsed = 0
@@ -583,12 +641,18 @@ def wait_for_vpn_at_startup():
         )
         if check_intranet_connection():
             logging.info("✔️ VPN 連線已恢復！繼續啟動機器人...")
+            send_telegram("✅ <b>VPN 連線已恢復</b>，打卡機器人繼續啟動。")
             return True
 
     logging.error(
         f"❌ 已等待 {STARTUP_VPN_MAX_WAIT // 60} 分鐘，VPN 仍未連線。程式將退出。"
     )
     logging.warning("🤔 請確認 VPN 狀態後手動重啟機器人。")
+    send_telegram(
+        f"❌ <b>VPN 等待逾時</b>\n"
+        f"等待 {STARTUP_VPN_MAX_WAIT // 60} 分鐘仍無法連線，打卡機器人即將退出。\n"
+        f"請手動確認 VPN 並重啟服務。"
+    )
     return False
 
 
@@ -641,8 +705,26 @@ if __name__ == "__main__":
 
     # --now 模式：立即打卡後退出（測試用）
     if args.now:
-        logging.info(f"⚡ 手動觸發模式：立即執行 {'上班' if args.now == 'in' else '下班'} 打卡")
+        label = "上班" if args.now == "in" else "下班"
+        logging.info(f"⚡ 手動觸發模式：立即執行 {label} 打卡")
         success = perform_clock_action_api(args.now)
+        if success:
+            send_telegram(
+                f"✅ <b>手動{label}打卡成功</b> {env_label}\n"
+                f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+        else:
+            send_telegram(
+                f"❌ <b>手動{label}打卡失敗</b> {env_label}\n"
+                f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            )
         sys.exit(0 if success else 1)
+
+    # 排程模式：發送啟動通知
+    send_telegram(
+        f"🤖 <b>OVT 打卡機器人已啟動</b>\n"
+        f"📅 {today.isoformat()} ({weekday_str})\n"
+        f"🌐 {env_label} {BASE_URL}"
+    )
 
     main_loop()
