@@ -1,4 +1,4 @@
-# --- OVT 自動打卡機器人 - v5.8 Linux 背景服務版 ---
+# --- OVT 自動打卡機器人 - v5.9 Linux 背景服務版 ---
 import os
 import time
 import sys
@@ -10,6 +10,7 @@ import random
 import logging
 import logging.handlers
 import platform
+import threading
 import requests
 import subprocess
 import urllib.request
@@ -88,6 +89,147 @@ def send_telegram(message: str):
             pass
     except Exception:
         logging.warning("⚠️ Telegram 通知發送失敗（不影響打卡流程）")
+
+
+def _telegram_reply(chat_id: str, message: str):
+    """向指定 chat_id 回覆訊息（用於指令回應）。"""
+    if not TELEGRAM_TOKEN:
+        return
+    try:
+        payload = json.dumps({
+            "chat_id": chat_id,
+            "text": message,
+            "parse_mode": "HTML",
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        ctx = ssl.create_default_context()
+        with urllib.request.urlopen(req, timeout=10, context=ctx):
+            pass
+    except Exception:
+        logging.warning("⚠️ Telegram 指令回覆發送失敗")
+
+
+def _ping_host(host: str) -> str:
+    """Ping 一台主機，回傳單行結果字串（含延遲或失敗訊息）。"""
+    param = ["-n", "1"] if platform.system().lower() == "windows" else ["-c", "1", "-W", "3"]
+    try:
+        result = subprocess.run(
+            ["ping"] + param + [host],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0:
+            # 從輸出中提取 avg 延遲
+            for line in result.stdout.splitlines():
+                if "time=" in line:
+                    time_part = [p for p in line.split() if p.startswith("time=")]
+                    if time_part:
+                        return f"✅ {time_part[0]}"
+                # Linux rtt 統計行
+                if "rtt" in line or "round-trip" in line:
+                    avg = line.split("/")[4] if "/" in line else "?"
+                    return f"✅ avg {avg} ms"
+            return "✅ 可達"
+        else:
+            return "❌ 無法連線"
+    except subprocess.TimeoutExpired:
+        return "❌ 逾時"
+    except Exception as e:
+        return f"❌ 錯誤: {e}"
+
+
+def _handle_ping_command(chat_id: str):
+    """處理 /ping 指令：回報機器人狀態與兩站連線結果。"""
+    now = datetime.now()
+    now_str = now.strftime("%Y-%m-%d %H:%M:%S")
+
+    # 讀取今日打卡狀態
+    try:
+        with open(STATUS_FILE, "r", encoding="utf-8") as f:
+            status = json.load(f)
+        today_str = status.get("date", "?")
+        if status.get("skipped"):
+            clock_status = f"💤 今日跳過（{status.get('reason', '')}）"
+        else:
+            ci = "✅" if status.get("clock_in_done") else "⏳"
+            co = "✅" if status.get("clock_out_done") else "⏳"
+            clock_status = f"上班打卡: {ci}  下班打卡: {co}"
+    except Exception:
+        today_str = date.today().isoformat()
+        clock_status = "⚠️ 無法讀取狀態檔"
+
+    # Ping 兩站
+    prod_ip = "10.3.10.162"
+    test_ip = "10.3.10.163"
+    prod_result = _ping_host(prod_ip)
+    test_result = _ping_host(test_ip)
+
+    reply = (
+        f"🤖 <b>OVT 打卡機器人 /ping</b>\n"
+        f"⏰ {now_str}\n"
+        f"📅 {today_str}\n"
+        f"{'─' * 28}\n"
+        f"<b>今日打卡狀態</b>\n{clock_status}\n"
+        f"{'─' * 28}\n"
+        f"<b>網路連線</b>\n"
+        f"🏭 正式站 ({prod_ip})：{prod_result}\n"
+        f"🧪 測試站 ({test_ip})：{test_result}"
+    )
+    _telegram_reply(chat_id, reply)
+
+
+def telegram_polling_loop():
+    """背景執行緒：long-poll Telegram getUpdates，處理指令。
+    不影響打卡主流程，發生任何錯誤均自動重試。
+    """
+    if not TELEGRAM_TOKEN:
+        return
+
+    ctx = ssl.create_default_context()
+    offset = 0
+    logging.info("🤖 Telegram 指令監聽執行緒已啟動（支援 /ping）")
+
+    while True:
+        try:
+            params = json.dumps({
+                "offset": offset,
+                "timeout": 30,
+                "allowed_updates": ["message"],
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates",
+                data=params,
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=40, context=ctx) as resp:
+                data = json.loads(resp.read())
+
+            if not data.get("ok"):
+                time.sleep(5)
+                continue
+
+            for update in data.get("result", []):
+                offset = update["update_id"] + 1
+                msg = update.get("message", {})
+                text = msg.get("text", "")
+                chat_id = str(msg.get("chat", {}).get("id", ""))
+
+                if not chat_id or not text:
+                    continue
+
+                if text.startswith("/ping"):
+                    logging.info(f"📨 收到 /ping 指令（chat_id={chat_id}）")
+                    threading.Thread(
+                        target=_handle_ping_command,
+                        args=(chat_id,),
+                        daemon=True,
+                    ).start()
+
+        except Exception:
+            time.sleep(10)
 
 # --- API Interaction ---
 PROD_BASE_URL = "https://tw-eip.ovt.com"
@@ -720,7 +862,11 @@ if __name__ == "__main__":
             )
         sys.exit(0 if success else 1)
 
-    # 排程模式：發送啟動通知
+    # 排程模式：啟動 Telegram 指令監聽執行緒 & 發送啟動通知
+    if TELEGRAM_TOKEN:
+        t = threading.Thread(target=telegram_polling_loop, daemon=True, name="tg-polling")
+        t.start()
+
     send_telegram(
         f"🤖 <b>OVT 打卡機器人已啟動</b>\n"
         f"📅 {today.isoformat()} ({weekday_str})\n"
