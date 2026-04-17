@@ -194,11 +194,10 @@ _HELP_TEXT = (
 
 
 def fetch_attendance_from_eip():
-    """從 EIP 站點取得今日打卡記錄。
+    """從 EIP 首頁取得今日打卡記錄（clockInTime / clockOutTime span）。
     回傳 (clock_in, clock_out)，未打卡時對應值為 None，失敗時回傳 (None, None)。
-    clock_in/out 格式為 EIP 原始字串，例如 '07:48AM' / '05:03PM'。
+    時間格式為 HH:MM:SS，例如 '10:44:10' / '14:20:00'。
     """
-    today = date.today().isoformat()
     try:
         s = requests.Session()
         login_page = s.get(LOGIN_URL, verify=False, timeout=REQUEST_TIMEOUT)
@@ -217,24 +216,22 @@ def fetch_attendance_from_eip():
         if "login" in login_resp.url.lower():
             return None, None
 
-        logs_resp = s.get(f"{BASE_URL}/attendance/logs/", verify=False, timeout=REQUEST_TIMEOUT)
-        logs_resp.raise_for_status()
-        table = BeautifulSoup(logs_resp.text, "html.parser").find("table")
-        if not table:
-            return None, None
+        # 今日打卡時間直接顯示在首頁 #clockInTime / #clockOutTime
+        home_resp = s.get(f"{BASE_URL}/", verify=False, timeout=REQUEST_TIMEOUT)
+        home_resp.raise_for_status()
+        home_soup = BeautifulSoup(home_resp.text, "html.parser")
 
-        for row in table.find_all("tr"):
-            cells = [td.get_text(strip=True) for td in row.find_all("td")]
-            if not cells:
-                continue
-            if cells[0].startswith(today):
-                raw_in  = cells[1] if len(cells) > 1 else None
-                raw_out = cells[2] if len(cells) > 2 else None
-                clock_in  = raw_in  if raw_in  and raw_in  != "--:-- --" else None
-                clock_out = raw_out if raw_out and raw_out != "--:-- --" else None
-                return clock_in, clock_out
+        def _parse_time(span_id):
+            el = home_soup.find("span", {"id": span_id})
+            if not el:
+                return None
+            txt = el.get_text(strip=True)
+            return txt if txt else None
 
-        return None, None  # 今日尚無紀錄
+        clock_in  = _parse_time("clockInTime")
+        clock_out = _parse_time("clockOutTime")
+        return clock_in, clock_out
+
     except Exception:
         return None, None
 
