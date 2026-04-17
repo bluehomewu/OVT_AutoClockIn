@@ -1,6 +1,6 @@
 # OVT 自動打卡機器人 — Linux 版
 
-> **版本**：v5.5 Linux 背景服務版  
+> **版本**：v5.6 Linux 背景服務版  
 > **執行環境**：Linux + Python 3.8+ + systemd  
 > **背景執行方式**：systemd service（不依賴 Docker、tmux 或 `&`）
 
@@ -17,7 +17,8 @@
 7. [服務管理指令](#7-服務管理指令)
 8. [日誌查看](#8-日誌查看)
 9. [假日管理工具](#9-假日管理工具)
-10. [常見問題](#10-常見問題)
+10. [測試與手動打卡](#10-測試與手動打卡)
+11. [常見問題](#11-常見問題)
 
 ---
 
@@ -124,7 +125,12 @@ Linux/
 
 ## 4. API 節點說明
 
-目標系統：`https://tw-eip.ovt.com`
+目標系統：
+
+| 環境 | 網址 | IP |
+|------|------|----|
+| **正式站** | `https://tw-eip.ovt.com` | `10.3.10.162` |
+| **測試站** | `https://tw-eip-preprd.ovt.com` | `10.3.10.163` |
 
 ### 4.1 取得登入頁面（GET）
 
@@ -417,3 +423,48 @@ sudo systemctl restart autoclock
 ```bash
 cat ~/ovt-autoclock/login_failure_response.html
 ```
+
+---
+
+## 10. 測試與手動打卡
+
+v5.6 新增兩個命令列參數，方便對測試環境進行驗證，或在不等待排程的情況下立即執行打卡。
+
+### 環境說明
+
+| 環境 | 網址 | IP |
+|------|------|----|
+| **正式站**（預設） | `https://tw-eip.ovt.com` | `10.3.10.162` |
+| **測試站** | `https://tw-eip-preprd.ovt.com` | `10.3.10.163` |
+
+### 參數說明
+
+| 參數 | 說明 |
+|------|------|
+| `--test` | 切換至測試站（`tw-eip-preprd.ovt.com`），不加此參數則使用正式站 |
+| `--now in\|out` | 立即執行單次打卡後退出，不進入排程迴圈 |
+
+### 使用範例
+
+```bash
+# 對測試站立即執行上班打卡（驗證流程用）
+python3 api_test.py --test --now in
+
+# 對測試站立即執行下班打卡
+python3 api_test.py --test --now out
+
+# 對正式站立即手動補打上班卡（不走排程）
+python3 api_test.py --now in
+
+# 以測試站啟動完整排程服務（整合測試用）
+python3 api_test.py --test
+```
+
+> **注意**：
+> - systemd 服務（`autoclock.service`）預設不帶任何參數，永遠使用**正式站**。
+> - `--now` 模式執行完畢後程式會自動退出（不影響 `bot_status.json`）。
+> - 測試站與正式站共用同一組帳號密碼（`account.config`）。
+
+---
+
+## 11. 常見問題
