@@ -187,37 +187,42 @@ _HELP_TEXT = (
     "/ping — 檢查機器人是否在線，並回報今日打卡狀態\n"
     "        及主機到正式站 / 測試站的 ping 延遲\n"
     "\n"
-    "/list — 列出今日排程及實際打卡時間\n"
+    "/list — 列出今日排程及實際打卡時間（正式站）\n"
+    "\n"
+    "/list_testsite — 列出測試站今日上下班打卡時間\n"
     "\n"
     "/help — 顯示此說明訊息"
 )
 
 
-def fetch_attendance_from_eip():
+def fetch_attendance_from_eip(base_url: str = None):
     """從 EIP 首頁取得今日打卡記錄（clockInTime / clockOutTime span）。
     回傳 (clock_in, clock_out)，未打卡時對應值為 None，失敗時回傳 (None, None)。
     時間格式為 HH:MM:SS，例如 '10:44:10' / '14:20:00'。
+    base_url 預設使用全域 BASE_URL（正式站或已設定的站點）。
     """
+    target = base_url or BASE_URL
+    login_url = f"{target}/login/"
     try:
         s = requests.Session()
-        login_page = s.get(LOGIN_URL, verify=False, timeout=REQUEST_TIMEOUT)
+        login_page = s.get(login_url, verify=False, timeout=REQUEST_TIMEOUT)
         login_page.raise_for_status()
         soup = BeautifulSoup(login_page.text, "html.parser")
         token_el = soup.find("input", {"name": "csrfmiddlewaretoken"})
         if not token_el:
             return None, None
         login_resp = s.post(
-            LOGIN_URL,
+            login_url,
             data={"username": USERNAME, "password": PASSWORD,
                   "csrfmiddlewaretoken": token_el["value"]},
-            headers={"Referer": LOGIN_URL},
+            headers={"Referer": login_url},
             verify=False, timeout=REQUEST_TIMEOUT,
         )
         if "login" in login_resp.url.lower():
             return None, None
 
         # 今日打卡時間直接顯示在首頁 #clockInTime / #clockOutTime
-        home_resp = s.get(f"{BASE_URL}/", verify=False, timeout=REQUEST_TIMEOUT)
+        home_resp = s.get(f"{target}/", verify=False, timeout=REQUEST_TIMEOUT)
         home_resp.raise_for_status()
         home_soup = BeautifulSoup(home_resp.text, "html.parser")
 
@@ -311,6 +316,22 @@ def _handle_list_command(chat_id: str):
     _telegram_reply(chat_id, reply)
 
 
+def _handle_list_testsite_command(chat_id: str):
+    """處理 /list-testsite 指令：從測試站 EIP 取得今日打卡時間。"""
+    today_str = date.today().strftime("%Y-%m-%d %A")
+    eip_in, eip_out = fetch_attendance_from_eip(base_url=TEST_BASE_URL)
+    ci_icon = "✅" if eip_in  else "⏳"
+    co_icon = "✅" if eip_out else "⏳"
+    reply = (
+        f"📋 <b>今日打卡記錄（測試站）</b>\n"
+        f"📅 {today_str}\n"
+        f"{'─' * 28}\n"
+        f"🟢 上班打卡 {ci_icon}：{eip_in  or '（尚未打卡）'}\n"
+        f"🔴 下班打卡 {co_icon}：{eip_out or '（尚未打卡）'}"
+    )
+    _telegram_reply(chat_id, reply)
+
+
 def telegram_polling_loop():
     """背景執行緒：long-poll Telegram getUpdates，處理指令。
     不影響打卡主流程，發生任何錯誤均自動重試。
@@ -361,6 +382,14 @@ def telegram_polling_loop():
                 elif text.startswith("/help"):
                     logging.info(f"📨 收到 /help 指令（chat_id={chat_id}）")
                     _telegram_reply(chat_id, _HELP_TEXT)
+
+                elif text.startswith("/list_testsite"):
+                    logging.info(f"📨 收到 /list_testsite 指令（chat_id={chat_id}）")
+                    threading.Thread(
+                        target=_handle_list_testsite_command,
+                        args=(chat_id,),
+                        daemon=True,
+                    ).start()
 
                 elif text.startswith("/list"):
                     logging.info(f"📨 收到 /list 指令（chat_id={chat_id}）")
