@@ -1,0 +1,23 @@
+[Unit]
+Description=OVT Auto Clock-In Bot
+Documentation=file://%i/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 執行身份：安裝時由 install.sh 自動替換為目前使用者
+User=%USER_PLACEHOLDER%
+WorkingDirectory=%WORKDIR_PLACEHOLDER%
+ExecStart=/usr/bin/python3 %WORKDIR_PLACEHOLDER%/api_test.py
+
+# 失敗時自動重啟（例如 VPN 問題導致退出）
+Restart=on-failure
+RestartSec=60
+
+# 日誌由 Python 直接寫入 autoclock_bot.log，stdout/stderr 輸出至 systemd journal
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

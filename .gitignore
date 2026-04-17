@@ -1,0 +1,24 @@
+# 帳號密碼設定檔（含明文密碼，絕對不可上傳）
+account.config
+
+# 執行時期自動產生的狀態與日誌檔
+bot_status.json
+autoclock_bot.log
+
+# 登入失敗時產生的除錯 HTML
+login_page_no_token.html
+login_failure_response.html
+
+# Python 編譯快取
+__pycache__/
+*.pyc
+*.pyo
+
+# 編輯器與 IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
