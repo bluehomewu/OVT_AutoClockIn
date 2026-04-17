@@ -181,6 +181,16 @@ def _handle_ping_command(chat_id: str):
     _telegram_reply(chat_id, reply)
 
 
+_HELP_TEXT = (
+    "🤖 <b>OVT 打卡機器人 — 可用指令</b>\n"
+    "\n"
+    "/ping — 檢查機器人是否在線，並回報今日打卡狀態\n"
+    "        及主機到正式站 / 測試站的 ping 延遲\n"
+    "\n"
+    "/help — 顯示此說明訊息"
+)
+
+
 def telegram_polling_loop():
     """背景執行緒：long-poll Telegram getUpdates，處理指令。
     不影響打卡主流程，發生任何錯誤均自動重試。
@@ -190,7 +200,7 @@ def telegram_polling_loop():
 
     ctx = ssl.create_default_context()
     offset = 0
-    logging.info("🤖 Telegram 指令監聽執行緒已啟動（支援 /ping）")
+    logging.info("🤖 Telegram 指令監聽執行緒已啟動（支援 /ping、/help）")
 
     while True:
         try:
@@ -227,6 +237,10 @@ def telegram_polling_loop():
                         args=(chat_id,),
                         daemon=True,
                     ).start()
+
+                elif text.startswith("/help"):
+                    logging.info(f"📨 收到 /help 指令（chat_id={chat_id}）")
+                    _telegram_reply(chat_id, _HELP_TEXT)
 
         except Exception:
             time.sleep(10)
