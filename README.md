@@ -1,6 +1,6 @@
 # OVT 自動打卡機器人 — Linux 版
 
-> **版本**：v5.7 Linux 背景服務版  
+> **版本**：v5.8 Linux 背景服務版  
 > **執行環境**：Linux + Python 3.8+ + systemd  
 > **背景執行方式**：systemd service（不依賴 Docker、tmux 或 `&`）
 
@@ -17,8 +17,9 @@
 7. [服務管理指令](#7-服務管理指令)
 8. [日誌查看](#8-日誌查看)
 9. [假日與例外打卡日管理](#9-假日與例外打卡日管理)
-10. [測試與手動打卡](#10-測試與手動打卡)
-11. [常見問題](#11-常見問題)
+10. [Telegram 通知](#10-telegram-通知)
+11. [測試與手動打卡](#11-測試與手動打卡)
+12. [常見問題](#12-常見問題)
 
 ---
 
@@ -211,11 +212,17 @@ csrfmiddlewaretoken=<cookie 中的 csrftoken>
 [credentials]
 username = your_username
 password = your_password
+
+[telegram]
+token = YOUR_BOT_TOKEN
+chat_id = YOUR_CHAT_ID
 ```
 
-> ⚠️ **安全提示**：此檔案包含明文密碼，請確保：
-> - 不要提交至 Git（加入 `.gitignore`）
+> ⚠️ **安全提示**：此檔案包含明文密碼與 Bot Token，請確保：
+> - 不要提交至 Git（已加入 `.gitignore`）
 > - 設定適當的檔案權限：`chmod 600 account.config`
+
+> 💡 **Telegram 為選用**：若不填寫 `[telegram]` 節或留空，程式將靜默略過通知，不影響打卡功能。
 
 ### `holidays.txt`
 
@@ -258,12 +265,16 @@ cd ~/ovt-autoclock
 vim account.config
 ```
 
-填入正確的帳號密碼後儲存：
+填入正確的帳號密碼後儲存，若要啟用 Telegram 通知可一併填入：
 
 ```ini
 [credentials]
 username = your.username
 password = your_password
+
+[telegram]          # 選用，不填則不發通知
+token = YOUR_BOT_TOKEN
+chat_id = YOUR_CHAT_ID
 ```
 
 #### Step 3：設定檔案權限
@@ -413,7 +424,45 @@ python3 holiday_manager.py
 
 ---
 
-## 10. 測試與手動打卡
+## 10. Telegram 通知
+
+v5.8 新增 Telegram Bot 通知，讓你在手機上即時掌握打卡狀態。
+
+### 設定方式
+
+在 `account.config` 中加入 `[telegram]` 節：
+
+```ini
+[telegram]
+token = 你的_BOT_TOKEN
+chat_id = 你的_CHAT_ID
+```
+
+**取得 Bot Token**：向 [@BotFather](https://t.me/BotFather) 建立 Bot，取得 Token。  
+**取得 Chat ID**：先對 Bot 發送任意訊息，再呼叫 `https://api.telegram.org/bot<TOKEN>/getUpdates` 查看 `chat.id`。
+
+### 通知事件列表
+
+| 事件 | 訊息樣式 |
+|------|----------|
+| 機器人啟動（排程模式） | 🤖 已啟動 + 日期 + 環境 |
+| 上/下班打卡成功 | ✅ 打卡成功 + 時間 |
+| 打卡失敗（達最大重試次數）| ❌ 失敗 + 請手動處理 |
+| 補打卡成功（窗口已過）| ⚠️ 補打卡成功 + 延遲分鐘數 |
+| 補打卡失敗（重試耗盡）| ❌ 補打卡失敗 + 請手動補登 |
+| 打卡窗口超過 2 小時後放棄 | ❌ 放棄 + 請手動補登 |
+| VPN 連線失敗（啟動時）| ⚠️ VPN 失敗 + 等待時間 |
+| VPN 連線恢復 | ✅ VPN 恢復 |
+| VPN 等待逾時退出 | ❌ 逾時退出 + 請手動重啟 |
+| `--now` 手動打卡成功/失敗 | ✅/❌ + 測試/正式站標記 |
+
+### 停用通知
+
+將 `account.config` 中的 `[telegram]` 節整個移除，或將 `token` 留空即可。程式不會因此報錯。
+
+---
+
+## 11. 測試與手動打卡
 
 v5.6 新增兩個命令列參數，方便對測試環境進行驗證，或在不等待排程的情況下立即執行打卡。
 
@@ -454,7 +503,7 @@ python3 api_test.py --test
 
 ---
 
-## 11. 常見問題
+## 12. 常見問題
 
 ### Q：服務啟動後馬上停止？
 
