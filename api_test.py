@@ -187,8 +187,66 @@ _HELP_TEXT = (
     "/ping — 檢查機器人是否在線，並回報今日打卡狀態\n"
     "        及主機到正式站 / 測試站的 ping 延遲\n"
     "\n"
+    "/list — 列出今日排程及實際打卡時間\n"
+    "\n"
     "/help — 顯示此說明訊息"
 )
+
+
+def _handle_list_command(chat_id: str):
+    """處理 /list 指令：顯示今日排程時間與實際打卡時間。"""
+    try:
+        with open(STATUS_FILE, "r", encoding="utf-8") as f:
+            status = json.load(f)
+    except Exception:
+        _telegram_reply(chat_id, "⚠️ 無法讀取狀態檔，請確認機器人是否正常運行。")
+        return
+
+    today_str = status.get("date", date.today().isoformat())
+
+    if status.get("skipped"):
+        reason = status.get("reason", "")
+        _telegram_reply(
+            chat_id,
+            f"📋 <b>今日打卡記錄</b>\n"
+            f"📅 {today_str}\n"
+            f"{'─' * 28}\n"
+            f"💤 今日跳過（{reason}）\n"
+            f"無自動打卡排程。"
+        )
+        return
+
+    def fmt_time(key):
+        val = status.get(key)
+        return val if val else "—"
+
+    sched_in  = fmt_time("scheduled_in")
+    sched_out = fmt_time("scheduled_out")
+    # scheduled_in/out 在 JSON 是完整 ISO datetime，只取時間部分
+    if len(sched_in) > 8:
+        sched_in = sched_in[11:19]
+    if len(sched_out) > 8:
+        sched_out = sched_out[11:19]
+
+    actual_in  = fmt_time("clock_in_time")
+    actual_out = fmt_time("clock_out_time")
+
+    ci_icon = "✅" if status.get("clock_in_done") else "⏳"
+    co_icon = "✅" if status.get("clock_out_done") else "⏳"
+
+    reply = (
+        f"📋 <b>今日打卡記錄</b>\n"
+        f"📅 {today_str}\n"
+        f"{'─' * 28}\n"
+        f"<b>上班打卡</b> {ci_icon}\n"
+        f"  排程時間：{sched_in}\n"
+        f"  實際打卡：{actual_in}\n"
+        f"{'─' * 28}\n"
+        f"<b>下班打卡</b> {co_icon}\n"
+        f"  排程時間：{sched_out}\n"
+        f"  實際打卡：{actual_out}"
+    )
+    _telegram_reply(chat_id, reply)
 
 
 def telegram_polling_loop():
@@ -241,6 +299,14 @@ def telegram_polling_loop():
                 elif text.startswith("/help"):
                     logging.info(f"📨 收到 /help 指令（chat_id={chat_id}）")
                     _telegram_reply(chat_id, _HELP_TEXT)
+
+                elif text.startswith("/list"):
+                    logging.info(f"📨 收到 /list 指令（chat_id={chat_id}）")
+                    threading.Thread(
+                        target=_handle_list_command,
+                        args=(chat_id,),
+                        daemon=True,
+                    ).start()
 
         except Exception:
             time.sleep(10)
@@ -631,6 +697,7 @@ def _handle_clock_action(status: dict, action_type: str, label: str):
         success = perform_clock_action_api(action_type)
         if success:
             status[done_key] = True
+            status[f"clock_{action_type}_time"] = now.strftime("%H:%M:%S")
             logging.warning("⚠️ 補打卡成功，但打卡時間已延遲，請留意考勤記錄。")
             send_telegram(
                 f"⚠️ <b>{label}補打卡成功</b>（延遲 {mins_late:.0f} 分鐘）\n"
@@ -663,6 +730,7 @@ def _handle_clock_action(status: dict, action_type: str, label: str):
         success = perform_clock_action_api(action_type)
         if success:
             status[done_key] = True
+            status[f"clock_{action_type}_time"] = datetime.now().strftime("%H:%M:%S")
             logging.info(f"✔️ {label}打卡成功。")
             send_telegram(
                 f"✅ <b>{label}打卡成功</b>\n"
