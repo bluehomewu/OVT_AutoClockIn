@@ -1,6 +1,6 @@
 # OVT 自動打卡機器人 — Linux 版
 
-> **版本**：v5.6 Linux 背景服務版  
+> **版本**：v5.7 Linux 背景服務版  
 > **執行環境**：Linux + Python 3.8+ + systemd  
 > **背景執行方式**：systemd service（不依賴 Docker、tmux 或 `&`）
 
@@ -16,7 +16,7 @@
 6. [部署方式](#6-部署方式)
 7. [服務管理指令](#7-服務管理指令)
 8. [日誌查看](#8-日誌查看)
-9. [假日管理工具](#9-假日管理工具)
+9. [假日與例外打卡日管理](#9-假日與例外打卡日管理)
 10. [測試與手動打卡](#10-測試與手動打卡)
 11. [常見問題](#11-常見問題)
 
@@ -41,14 +41,15 @@
 ```
 Linux/
 ├── api_test.py          # 主程式（背景打卡 Bot）
-├── holiday_manager.py   # 假日/請假日期管理工具（互動式 CLI）
+├── holiday_manager.py   # 假日/例外打卡日管理工具（互動式 CLI）
 ├── account.config       # 帳號密碼設定檔 ⚠️ 請勿上傳至版控
-├── holidays.txt         # 自訂假日與請假日期清單
+├── holidays.txt         # 自訂假日與請假日期清單（不納入版控）
+├── exceptions.txt       # 例外打卡日清單（覆蓋 skip 規則，不納入版控）
 ├── autoclock.service    # systemd 服務定義範本
 ├── install.sh           # 一鍵安裝腳本
-├── uninstall.sh         # 移除腳本
-├── bot_status.json      # 執行時期狀態檔（自動產生）
-├── autoclock_bot.log    # 日誌檔（自動產生）
+├── uninstall.sh         # 移除腳本（含互動式清理選項）
+├── bot_status.json      # 執行時期狀態檔（自動產生，不納入版控）
+├── autoclock_bot.log    # 日誌檔（RotatingFileHandler，5MB × 3份，不納入版控）
 └── README.md            # 本文件
 ```
 
@@ -326,6 +327,8 @@ sudo bash uninstall.sh
 
 程式同時輸出至 `autoclock_bot.log` 檔案與 systemd journal。
 
+> **日誌輪替**：使用 `RotatingFileHandler`，單檔上限 5 MB，最多保留 3 份備份（`autoclock_bot.log.1`、`.2`、`.3`）。
+
 ```bash
 # 即時查看日誌檔（推薦）
 tail -f ~/ovt-autoclock/autoclock_bot.log
@@ -355,9 +358,9 @@ journalctl -u autoclock --since "2026-04-17" --until "2026-04-18"
 
 ---
 
-## 9. 假日管理工具
+## 9. 假日與例外打卡日管理
 
-使用 `holiday_manager.py` 管理 `holidays.txt` 中的假日/請假日期：
+使用 `holiday_manager.py` 管理假日/請假日期及例外打卡日，**修改後不需重啟服務**即可生效：
 
 ```bash
 python3 holiday_manager.py
@@ -367,62 +370,46 @@ python3 holiday_manager.py
 
 ```
 ========================================
- === 假日/請假管理工具 ===
+ === 假日/請假/例外打卡日管理工具 ===
 ========================================
-  1. 顯示所有已設定日期
-  2. 新增一個日期
-  3. 移除一個日期
-  4. 離開
+  1. 顯示所有假日/請假日期
+  2. 新增假日/請假日期
+  3. 移除假日/請假日期
+  4. ---
+  5. 顯示所有例外打卡日
+  6. 新增例外打卡日
+  7. 移除例外打卡日
+  0. 離開
 ========================================
 ```
 
-修改後**不需要重啟服務**，程式在跨日時會自動重新讀取 `holidays.txt`。
+### 假日（`holidays.txt`）
 
----
+每行一個日期，格式為 `YYYY-MM-DD`，支援 `#` 行內註解：
 
-## 10. 常見問題
-
-### Q：服務啟動後馬上停止？
-
-查看日誌確認原因：
-
-```bash
-journalctl -u autoclock -n 30 --no-pager
+```
+2026-02-16 # 過年
+2026-04-04 # 兒童節
+2026-06-19 # 請假
 ```
 
-常見原因：
-- `account.config` 格式錯誤或帳密錯誤
-- VPN 未連線，且等待 5 分鐘後超時退出 → 服務會自動在 60 秒後重啟
+跨日時程式會自動重新讀取此檔案。
 
-### Q：如何確認今天打卡是否已完成？
+### 例外打卡日（`exceptions.txt`）
 
-```bash
-cat ~/ovt-autoclock/bot_status.json
+原定週三、週五、週末為「跳過自動打卡」，但若有臨時需要，可將日期加入 `exceptions.txt`，機器人會在**下次輪詢時**（最多 1 小時）自動偵測並重新產生排程，**無需重啟服務**。
+
+```
+2026-04-23 # 週三補班
+2026-05-03 # 週六加班
 ```
 
-查看 `clock_in_done` 與 `clock_out_done` 是否為 `true`。
-
-### Q：VPN 斷線怎麼辦？
-
-Linux 版本不支援自動 GUI 重連，請手動重連 VPN。重連後服務會在下次輪詢時自動偵測到並繼續打卡。若打卡時間已過但在 2 小時寬限期內，會自動補打卡。
-
-### Q：如何修改打卡時間範圍？
-
-編輯 `api_test.py` 頂部的常數，然後重啟服務：
-
-```bash
-vim ~/ovt-autoclock/api_test.py
-# 修改 CLOCK_IN_TARGET_HOUR 等變數
-sudo systemctl restart autoclock
-```
-
-### Q：登入失敗怎麼辦？
-
-程式會將失敗的 HTML 回應儲存至 `login_failure_response.html`，可用來分析網站是否有結構變更：
-
-```bash
-cat ~/ovt-autoclock/login_failure_response.html
-```
+| 優先順序 | 規則 |
+|----------|------|
+| 1（最高）| `exceptions.txt` 中的日期 → **強制自動打卡** |
+| 2 | `holidays.txt` 中的日期 → 跳過 |
+| 3 | 週三 / 週五 / 週末 → 跳過 |
+| 4（最低）| 其他工作日 → 自動打卡 |
 
 ---
 
@@ -468,3 +455,60 @@ python3 api_test.py --test
 ---
 
 ## 11. 常見問題
+
+### Q：服務啟動後馬上停止？
+
+查看日誌確認原因：
+
+```bash
+journalctl -u autoclock -n 30 --no-pager
+```
+
+常見原因：
+- `account.config` 格式錯誤或帳密錯誤
+- VPN 未連線，且等待 5 分鐘後超時退出 → 服務會自動在 60 秒後重啟
+
+### Q：如何確認今天打卡是否已完成？
+
+```bash
+cat ~/ovt-autoclock/bot_status.json
+```
+
+查看 `clock_in_done` 與 `clock_out_done` 是否為 `true`。
+
+### Q：VPN 斷線怎麼辦？
+
+Linux 版本不支援自動 GUI 重連，請手動重連 VPN。重連後服務會在下次輪詢時自動偵測到並繼續打卡。若打卡時間已過但在 2 小時寬限期內，會自動補打卡。
+
+### Q：如何修改打卡時間範圍？
+
+編輯 `api_test.py` 頂部的常數，然後重啟服務：
+
+```bash
+vim ~/ovt-autoclock/api_test.py
+# 修改 CLOCK_IN_TARGET_HOUR 等變數
+sudo systemctl restart autoclock
+```
+
+### Q：程式碼更新後需要重新執行 install.sh 嗎？
+
+**不需要。** `install.sh` 只需在首次安裝時執行一次（或升級 service 定義時）。
+修改 `api_test.py` 或其他 Python 程式後，只需重啟服務即可：
+
+```bash
+sudo systemctl restart autoclock
+```
+
+### Q：登入失敗怎麼辦？
+
+程式會將失敗的 HTML 回應儲存至 `login_failure_response.html`，可用來分析網站是否有結構變更：
+
+```bash
+cat ~/ovt-autoclock/login_failure_response.html
+```
+
+### Q：想臨時在週三/週五/週末執行自動打卡？
+
+將日期加入 `exceptions.txt`（使用 `holiday_manager.py` 選項 5/6，或直接手動編輯），
+服務最多在 1 小時內自動偵測並重新排程，**不需重啟服務**。
+
