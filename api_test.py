@@ -61,11 +61,15 @@ except Exception:
 PROD_BASE_URL = "https://tw-eip.ovt.com"
 TEST_BASE_URL = "https://tw-eip-preprd.ovt.com"
 
-# 預設使用正式站；若以 --test 參數啟動則改用測試站
-BASE_URL = PROD_BASE_URL
-LOGIN_URL = f"{BASE_URL}/login/"
-CLOCK_IN_URL = f"{BASE_URL}/attendance/clockin-add/"
-CLOCK_OUT_URL = f"{BASE_URL}/attendance/clockout-add/"
+# 這些 URL 由 __main__ 根據 --test 參數設定後才可使用；
+# 函式內部透過全域查找取得，Python 在呼叫時解析 global，
+# 因此 __main__ 的賦值會正確反映到所有後續呼叫。
+BASE_URL: str = ""
+LOGIN_URL: str = ""
+CLOCK_IN_URL: str = ""
+CLOCK_OUT_URL: str = ""
+
+REQUEST_TIMEOUT = 15  # 所有 HTTP 請求的逾時秒數
 
 
 def perform_clock_action_api(action_type: str):
@@ -78,7 +82,7 @@ def perform_clock_action_api(action_type: str):
             requests.packages.urllib3.exceptions.InsecureRequestWarning
         )
 
-        login_page = session.get(LOGIN_URL, verify=False)
+        login_page = session.get(LOGIN_URL, verify=False, timeout=REQUEST_TIMEOUT)
         login_page.raise_for_status()
 
         soup = BeautifulSoup(login_page.text, "html.parser")
@@ -106,7 +110,8 @@ def perform_clock_action_api(action_type: str):
 
         logging.info("正在執行登入...")
         login_response = session.post(
-            LOGIN_URL, data=login_payload, headers=headers, verify=False
+            LOGIN_URL, data=login_payload, headers=headers, verify=False,
+            timeout=REQUEST_TIMEOUT,
         )
         login_response.raise_for_status()
 
@@ -139,7 +144,8 @@ def perform_clock_action_api(action_type: str):
         if action_type == "in":
             logging.info("正在發送 Clock In API 請求...")
             action_response = session.post(
-                CLOCK_IN_URL, headers=action_headers, json={}, verify=False
+                CLOCK_IN_URL, headers=action_headers, json={}, verify=False,
+                timeout=REQUEST_TIMEOUT,
             )
         else:  # 'out'
             logging.info("正在發送 Clock Out API 請求...")
@@ -153,6 +159,7 @@ def perform_clock_action_api(action_type: str):
                 headers=action_headers,
                 data=clock_out_payload,
                 verify=False,
+                timeout=REQUEST_TIMEOUT,
             )
 
         logging.info(f"伺服器回應狀態碼: {action_response.status_code}")
@@ -255,8 +262,11 @@ def save_status(status_data):
         k: v.isoformat() if isinstance(v, (datetime, date)) else v
         for k, v in status_data.items()
     }
-    with open(STATUS_FILE, "w", encoding="utf-8") as f:
+    # 原子寫入：先寫臨時檔再 rename，避免寫到一半崩潰導致狀態損壞
+    temp_file = STATUS_FILE + ".tmp"
+    with open(temp_file, "w", encoding="utf-8") as f:
         json.dump(status_to_save, f, indent=4)
+    os.replace(temp_file, STATUS_FILE)
     if not status_to_save.get("skipped"):
         logging.info(
             f"💾 狀態已儲存: Clock In Done: {status_to_save.get('clock_in_done', False)}, Clock Out Done: {status_to_save.get('clock_out_done', False)}"
