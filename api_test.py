@@ -1,4 +1,4 @@
-# --- OVT 自動打卡機器人 - v5.6 Linux 背景服務版 ---
+# --- OVT 自動打卡機器人 - v5.7 Linux 背景服務版 ---
 import os
 import time
 import sys
@@ -6,6 +6,7 @@ import argparse
 import configparser
 import random
 import logging
+import logging.handlers
 import json
 import platform
 import requests
@@ -30,18 +31,21 @@ STARTUP_VPN_RETRY_INTERVAL = 30
 
 
 def setup_logging():
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(levelname)s - %(message)s",
-        filename=LOG_FILE,
-        filemode="a",
-        encoding="utf-8",
+    fmt = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+
+    # 輪替日誌：最大 5 MB，保留 3 份備份，避免無限增長
+    file_handler = logging.handlers.RotatingFileHandler(
+        LOG_FILE, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
     )
+    file_handler.setFormatter(fmt)
+    root.addHandler(file_handler)
+
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(logging.INFO)
-    formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
-    console_handler.setFormatter(formatter)
-    logging.getLogger().addHandler(console_handler)
+    console_handler.setFormatter(fmt)
+    root.addHandler(console_handler)
 
 
 # --- 設定區 & 讀取設定檔 ---
@@ -384,11 +388,12 @@ def calculate_sleep_duration(status):
     future_events = [t for t in candidates if t > now]
 
     if not future_events:
+        # 所有事件已完成或今天跳過，直接睡到明天午夜，不每小時無謂喚醒
         tomorrow_midnight = datetime.combine(
             date.today() + timedelta(days=1), datetime.min.time()
         ) + timedelta(seconds=5)
         secs = (tomorrow_midnight - now).total_seconds()
-        return max(60, min(3600, secs))
+        return max(60, secs)
 
     next_event = min(future_events)
     secs_until = (next_event - now).total_seconds()

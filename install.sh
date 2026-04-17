@@ -28,6 +28,10 @@ if grep -q "YOUR_USERNAME" "${SCRIPT_DIR}/account.config" 2>/dev/null; then
     exit 1
 fi
 
+# 保護帳號密碼設定檔
+chmod 600 "${SCRIPT_DIR}/account.config"
+echo "✔️  已設定 account.config 權限為 600（僅擁有者可讀寫）"
+
 # 安裝 Python 依賴
 echo "📦 安裝 Python 套件..."
 pip3 install --quiet requests beautifulsoup4 || {
