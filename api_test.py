@@ -18,6 +18,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 STATUS_FILE = os.path.join(BASE_DIR, "bot_status.json")
 HOLIDAY_FILE = os.path.join(BASE_DIR, "holidays.txt")
+EXCEPTION_FILE = os.path.join(BASE_DIR, "exceptions.txt")
 LOG_FILE = os.path.join(BASE_DIR, "autoclock_bot.log")
 ACCOUNT_CONFIG = os.path.join(BASE_DIR, "account.config")
 
@@ -212,7 +213,31 @@ def get_leave_dates():
     return leave_dates
 
 
+def get_exception_dates():
+    """讀取 exceptions.txt，回傳需強制自動打卡的例外日期集合。"""
+    if not os.path.exists(EXCEPTION_FILE):
+        return set()
+    exception_dates = set()
+    with open(EXCEPTION_FILE, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            date_str = line.split("#")[0].strip()
+            try:
+                exception_dates.add(datetime.strptime(date_str, "%Y-%m-%d").date())
+            except ValueError:
+                logging.warning(
+                    f"⚠️ 在 {EXCEPTION_FILE} 中發現無效的日期格式: '{date_str}'，將忽略此行。"
+                )
+    return exception_dates
+
+
 def is_workday(check_date):
+    # 例外打卡日優先：即使是週三/五/週末，仍強制自動打卡
+    if check_date in get_exception_dates():
+        logging.info(f"⚡ 今天（{check_date}）是例外打卡日，將執行自動打卡。")
+        return True, "Exception Day"
     if check_date.weekday() in (2, 4):
         logging.info(f"💤 今天是手動打卡日 (星期三/星期五)，將跳過自動化。")
         return False, "Manual Day (Wednesday/Friday)"
@@ -406,6 +431,11 @@ def main_loop():
             logging.info("=" * 50)
 
         if status.get("skipped"):
+            # 每小時醒來時重新檢查 exceptions.txt，無需重啟服務即可生效
+            if date.today() in get_exception_dates():
+                logging.info("⚡ 偵測到今天已加入例外打卡日，重新載入排程...")
+                status = load_status()
+                continue
             time.sleep(3600)
             continue
 
