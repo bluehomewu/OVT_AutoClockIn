@@ -1,5 +1,8 @@
-# 帳號密碼設定檔（含明文密碼，絕對不可上傳）
-account.config
+# 使用者個人假日與例外打卡日清單（請勿上傳至版控）
+holidays.txt
+exceptions.txt
+
+
 
 # 執行時期自動產生的狀態與日誌檔
 bot_status.json
