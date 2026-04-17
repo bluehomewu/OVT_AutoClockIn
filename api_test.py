@@ -193,8 +193,55 @@ _HELP_TEXT = (
 )
 
 
+def fetch_attendance_from_eip():
+    """從 EIP 站點取得今日打卡記錄。
+    回傳 (clock_in, clock_out)，未打卡時對應值為 None，失敗時回傳 (None, None)。
+    clock_in/out 格式為 EIP 原始字串，例如 '07:48AM' / '05:03PM'。
+    """
+    today = date.today().isoformat()
+    try:
+        s = requests.Session()
+        login_page = s.get(LOGIN_URL, verify=False, timeout=REQUEST_TIMEOUT)
+        login_page.raise_for_status()
+        soup = BeautifulSoup(login_page.text, "html.parser")
+        token_el = soup.find("input", {"name": "csrfmiddlewaretoken"})
+        if not token_el:
+            return None, None
+        login_resp = s.post(
+            LOGIN_URL,
+            data={"username": USERNAME, "password": PASSWORD,
+                  "csrfmiddlewaretoken": token_el["value"]},
+            headers={"Referer": LOGIN_URL},
+            verify=False, timeout=REQUEST_TIMEOUT,
+        )
+        if "login" in login_resp.url.lower():
+            return None, None
+
+        logs_resp = s.get(f"{BASE_URL}/attendance/logs/", verify=False, timeout=REQUEST_TIMEOUT)
+        logs_resp.raise_for_status()
+        table = BeautifulSoup(logs_resp.text, "html.parser").find("table")
+        if not table:
+            return None, None
+
+        for row in table.find_all("tr"):
+            cells = [td.get_text(strip=True) for td in row.find_all("td")]
+            if not cells:
+                continue
+            if cells[0].startswith(today):
+                raw_in  = cells[1] if len(cells) > 1 else None
+                raw_out = cells[2] if len(cells) > 2 else None
+                clock_in  = raw_in  if raw_in  and raw_in  != "--:-- --" else None
+                clock_out = raw_out if raw_out and raw_out != "--:-- --" else None
+                return clock_in, clock_out
+
+        return None, None  # 今日尚無紀錄
+    except Exception:
+        return None, None
+
+
 def _handle_list_command(chat_id: str):
-    """處理 /list 指令：顯示今日排程時間與實際打卡時間。"""
+    """處理 /list 指令：從 EIP 取得今日實際打卡時間，並附上本機排程資料。"""
+    # --- 讀本機狀態（排程時間 & debug 備份）---
     try:
         with open(STATUS_FILE, "r", encoding="utf-8") as f:
             status = json.load(f)
@@ -206,33 +253,49 @@ def _handle_list_command(chat_id: str):
 
     if status.get("skipped"):
         reason = status.get("reason", "")
-        _telegram_reply(
-            chat_id,
-            f"📋 <b>今日打卡記錄</b>\n"
-            f"📅 {today_str}\n"
-            f"{'─' * 28}\n"
-            f"💤 今日跳過（{reason}）\n"
-            f"無自動打卡排程。"
-        )
+        # 今日跳過，但仍嘗試從 EIP 取得資料（可能是手動打卡或例外打卡日）
+        eip_in, eip_out = fetch_attendance_from_eip()
+        if eip_in or eip_out:
+            _telegram_reply(
+                chat_id,
+                f"📋 <b>今日打卡記錄</b>\n"
+                f"📅 {today_str}\n"
+                f"{'─' * 28}\n"
+                f"💤 自動打卡跳過（{reason}）\n"
+                f"{'─' * 28}\n"
+                f"<b>EIP 站點記錄</b>\n"
+                f"  上班打卡：{eip_in or '—'}\n"
+                f"  下班打卡：{eip_out or '—'}"
+            )
+        else:
+            _telegram_reply(
+                chat_id,
+                f"📋 <b>今日打卡記錄</b>\n"
+                f"📅 {today_str}\n"
+                f"{'─' * 28}\n"
+                f"💤 今日跳過（{reason}）\n"
+                f"無自動打卡排程，EIP 亦無記錄。"
+            )
         return
 
-    def fmt_time(key):
-        val = status.get(key)
-        return val if val else "—"
+    def fmt_sched(key):
+        val = status.get(key, "")
+        if not val:
+            return "—"
+        return val[11:19] if len(val) > 8 else val
 
-    sched_in  = fmt_time("scheduled_in")
-    sched_out = fmt_time("scheduled_out")
-    # scheduled_in/out 在 JSON 是完整 ISO datetime，只取時間部分
-    if len(sched_in) > 8:
-        sched_in = sched_in[11:19]
-    if len(sched_out) > 8:
-        sched_out = sched_out[11:19]
+    sched_in  = fmt_sched("scheduled_in")
+    sched_out = fmt_sched("scheduled_out")
+    local_in  = status.get("clock_in_time") or "—"
+    local_out = status.get("clock_out_time") or "—"
 
-    actual_in  = fmt_time("clock_in_time")
-    actual_out = fmt_time("clock_out_time")
+    # --- 從 EIP 取得最新資料 ---
+    eip_in, eip_out = fetch_attendance_from_eip()
+    eip_in_str  = eip_in  or "—"
+    eip_out_str = eip_out or "—"
 
-    ci_icon = "✅" if status.get("clock_in_done") else "⏳"
-    co_icon = "✅" if status.get("clock_out_done") else "⏳"
+    ci_icon = "✅" if (eip_in or status.get("clock_in_done"))  else "⏳"
+    co_icon = "✅" if (eip_out or status.get("clock_out_done")) else "⏳"
 
     reply = (
         f"📋 <b>今日打卡記錄</b>\n"
@@ -240,11 +303,13 @@ def _handle_list_command(chat_id: str):
         f"{'─' * 28}\n"
         f"<b>上班打卡</b> {ci_icon}\n"
         f"  排程時間：{sched_in}\n"
-        f"  實際打卡：{actual_in}\n"
+        f"  EIP 記錄：{eip_in_str}\n"
+        f"  本機備份：{local_in}\n"
         f"{'─' * 28}\n"
         f"<b>下班打卡</b> {co_icon}\n"
         f"  排程時間：{sched_out}\n"
-        f"  實際打卡：{actual_out}"
+        f"  EIP 記錄：{eip_out_str}\n"
+        f"  本機備份：{local_out}"
     )
     _telegram_reply(chat_id, reply)
 
