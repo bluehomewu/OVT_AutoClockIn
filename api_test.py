@@ -191,6 +191,14 @@ _HELP_TEXT = (
     "\n"
     "/list_testsite — 列出測試站今日上下班打卡時間\n"
     "\n"
+    "/clockin — 手動立即執行上班打卡，完成後自動顯示打卡記錄\n"
+    "\n"
+    "/clockout — 手動立即執行下班打卡，完成後自動顯示打卡記錄\n"
+    "\n"
+    "/clockin_test — 手動立即對測試站執行上班打卡，完成後自動顯示測試站打卡記錄\n"
+    "\n"
+    "/clockout_test — 手動立即對測試站執行下班打卡，完成後自動顯示測試站打卡記錄\n"
+    "\n"
     "/help — 顯示此說明訊息"
 )
 
@@ -332,6 +340,54 @@ def _handle_list_testsite_command(chat_id: str):
     _telegram_reply(chat_id, reply)
 
 
+def _handle_clockin_command(chat_id: str):
+    """處理 /clockin 指令：立即執行上班打卡，完成後自動顯示今日打卡記錄。"""
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    _telegram_reply(chat_id, f"⏳ 正在執行手動上班打卡...\n⏰ {now_str}")
+    success = perform_clock_action_api("in")
+    if success:
+        _telegram_reply(chat_id, f"✅ <b>手動上班打卡成功</b>\n⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    else:
+        _telegram_reply(chat_id, f"❌ <b>手動上班打卡失敗</b>\n⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    _handle_list_command(chat_id)
+
+
+def _handle_clockout_command(chat_id: str):
+    """處理 /clockout 指令：立即執行下班打卡，完成後自動顯示今日打卡記錄。"""
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    _telegram_reply(chat_id, f"⏳ 正在執行手動下班打卡...\n⏰ {now_str}")
+    success = perform_clock_action_api("out")
+    if success:
+        _telegram_reply(chat_id, f"✅ <b>手動下班打卡成功</b>\n⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    else:
+        _telegram_reply(chat_id, f"❌ <b>手動下班打卡失敗</b>\n⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    _handle_list_command(chat_id)
+
+
+def _handle_clockin_test_command(chat_id: str):
+    """處理 /clockin_test 指令：立即對測試站執行上班打卡，完成後顯示測試站打卡記錄。"""
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    _telegram_reply(chat_id, f"⏳ 正在執行手動上班打卡（🧪 測試站）...\n⏰ {now_str}")
+    success = perform_clock_action_api("in", base_url=TEST_BASE_URL)
+    if success:
+        _telegram_reply(chat_id, f"✅ <b>手動上班打卡成功（🧪 測試站）</b>\n⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    else:
+        _telegram_reply(chat_id, f"❌ <b>手動上班打卡失敗（🧪 測試站）</b>\n⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    _handle_list_testsite_command(chat_id)
+
+
+def _handle_clockout_test_command(chat_id: str):
+    """處理 /clockout_test 指令：立即對測試站執行下班打卡，完成後顯示測試站打卡記錄。"""
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    _telegram_reply(chat_id, f"⏳ 正在執行手動下班打卡（🧪 測試站）...\n⏰ {now_str}")
+    success = perform_clock_action_api("out", base_url=TEST_BASE_URL)
+    if success:
+        _telegram_reply(chat_id, f"✅ <b>手動下班打卡成功（🧪 測試站）</b>\n⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    else:
+        _telegram_reply(chat_id, f"❌ <b>手動下班打卡失敗（🧪 測試站）</b>\n⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    _handle_list_testsite_command(chat_id)
+
+
 def telegram_polling_loop():
     """背景執行緒：long-poll Telegram getUpdates，處理指令。
     不影響打卡主流程，發生任何錯誤均自動重試。
@@ -383,6 +439,38 @@ def telegram_polling_loop():
                     logging.info(f"📨 收到 /help 指令（chat_id={chat_id}）")
                     _telegram_reply(chat_id, _HELP_TEXT)
 
+                elif text.startswith("/clockin_test"):
+                    logging.info(f"📨 收到 /clockin_test 指令（chat_id={chat_id}）")
+                    threading.Thread(
+                        target=_handle_clockin_test_command,
+                        args=(chat_id,),
+                        daemon=True,
+                    ).start()
+
+                elif text.startswith("/clockout_test"):
+                    logging.info(f"📨 收到 /clockout_test 指令（chat_id={chat_id}）")
+                    threading.Thread(
+                        target=_handle_clockout_test_command,
+                        args=(chat_id,),
+                        daemon=True,
+                    ).start()
+
+                elif text.startswith("/clockin"):
+                    logging.info(f"📨 收到 /clockin 指令（chat_id={chat_id}）")
+                    threading.Thread(
+                        target=_handle_clockin_command,
+                        args=(chat_id,),
+                        daemon=True,
+                    ).start()
+
+                elif text.startswith("/clockout"):
+                    logging.info(f"📨 收到 /clockout 指令（chat_id={chat_id}）")
+                    threading.Thread(
+                        target=_handle_clockout_command,
+                        args=(chat_id,),
+                        daemon=True,
+                    ).start()
+
                 elif text.startswith("/list_testsite"):
                     logging.info(f"📨 收到 /list_testsite 指令（chat_id={chat_id}）")
                     threading.Thread(
@@ -417,8 +505,15 @@ CLOCK_OUT_URL: str = ""
 REQUEST_TIMEOUT = 15  # 所有 HTTP 請求的逾時秒數
 
 
-def perform_clock_action_api(action_type: str):
-    logging.info(f"🚀 === 準備執行 API 打卡任務: {action_type.upper()} ===")
+def perform_clock_action_api(action_type: str, base_url: str = None):
+    """執行打卡 API。base_url 預設使用全域 BASE_URL（正式站），
+    傳入 TEST_BASE_URL 可對測試站打卡。"""
+    target = base_url or BASE_URL
+    target_login_url    = f"{target}/login/"
+    target_clockin_url  = f"{target}/attendance/clockin-add/"
+    target_clockout_url = f"{target}/attendance/clockout-add/"
+
+    logging.info(f"🚀 === 準備執行 API 打卡任務: {action_type.upper()} ({target}) ===")
     session = requests.Session()
 
     try:
@@ -427,7 +522,7 @@ def perform_clock_action_api(action_type: str):
             requests.packages.urllib3.exceptions.InsecureRequestWarning
         )
 
-        login_page = session.get(LOGIN_URL, verify=False, timeout=REQUEST_TIMEOUT)
+        login_page = session.get(target_login_url, verify=False, timeout=REQUEST_TIMEOUT)
         login_page.raise_for_status()
 
         soup = BeautifulSoup(login_page.text, "html.parser")
@@ -451,11 +546,11 @@ def perform_clock_action_api(action_type: str):
             "password": PASSWORD,
             "csrfmiddlewaretoken": csrf_token_from_html,
         }
-        headers = {"Referer": LOGIN_URL}
+        headers = {"Referer": target_login_url}
 
         logging.info("正在執行登入...")
         login_response = session.post(
-            LOGIN_URL, data=login_payload, headers=headers, verify=False,
+            target_login_url, data=login_payload, headers=headers, verify=False,
             timeout=REQUEST_TIMEOUT,
         )
         login_response.raise_for_status()
@@ -481,7 +576,7 @@ def perform_clock_action_api(action_type: str):
             return False
 
         action_headers = {
-            "Referer": BASE_URL + "/",
+            "Referer": target + "/",
             "X-CSRFToken": csrf_token_for_actions,
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.36",
         }
@@ -489,7 +584,7 @@ def perform_clock_action_api(action_type: str):
         if action_type == "in":
             logging.info("正在發送 Clock In API 請求...")
             action_response = session.post(
-                CLOCK_IN_URL, headers=action_headers, json={}, verify=False,
+                target_clockin_url, headers=action_headers, json={}, verify=False,
                 timeout=REQUEST_TIMEOUT,
             )
         else:  # 'out'
@@ -500,7 +595,7 @@ def perform_clock_action_api(action_type: str):
                 "csrfmiddlewaretoken": csrf_token_for_actions,
             }
             action_response = session.post(
-                CLOCK_OUT_URL,
+                target_clockout_url,
                 headers=action_headers,
                 data=clock_out_payload,
                 verify=False,
