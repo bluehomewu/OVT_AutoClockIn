@@ -353,10 +353,38 @@ def _handle_list_command(chat_id: str):
 
 
 def _handle_list_testsite_command(chat_id: str):
-    """處理 /list-testsite 指令：從測試站 EIP 取得今日打卡時間。"""
+    """處理 /list_testsite 指令：從測試站 EIP 取得今日打卡時間，非工作日顯示跳過狀態。"""
     weekday_map = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
     today = date.today()
     today_str_full = f"{today.isoformat()} {weekday_map[today.weekday()]}"
+
+    is_work, reason = is_workday(today)
+    if not is_work:
+        # 非工作日仍嘗試查詢 EIP（可能有手動打卡）
+        eip_in, eip_out = fetch_attendance_from_eip(base_url=TEST_BASE_URL)
+        if eip_in or eip_out:
+            _telegram_reply(
+                chat_id,
+                f"📋 <b>今日打卡記錄（測試站）</b>\n"
+                f"📅 {today_str_full}\n"
+                f"{'─' * 28}\n"
+                f"💤 自動打卡跳過（{reason}）\n"
+                f"{'─' * 28}\n"
+                f"<b>EIP 站點記錄</b>\n"
+                f"  上班打卡：{eip_in or '—'}\n"
+                f"  下班打卡：{eip_out or '—'}"
+            )
+        else:
+            _telegram_reply(
+                chat_id,
+                f"📋 <b>今日打卡記錄（測試站）</b>\n"
+                f"📅 {today_str_full}\n"
+                f"{'─' * 28}\n"
+                f"💤 今日跳過（{reason}）\n"
+                f"無自動打卡排程，EIP 亦無記錄。"
+            )
+        return
+
     eip_in, eip_out = fetch_attendance_from_eip(base_url=TEST_BASE_URL)
     ci_icon = "✅" if eip_in  else "⏳"
     co_icon = "✅" if eip_out else "⏳"
@@ -364,8 +392,8 @@ def _handle_list_testsite_command(chat_id: str):
         f"📋 <b>今日打卡記錄（測試站）</b>\n"
         f"📅 {today_str_full}\n"
         f"{'─' * 28}\n"
-        f"🟢 上班打卡 {ci_icon}：{eip_in  or '（尚未打卡）'}\n"
-        f"🔴 下班打卡 {co_icon}：{eip_out or '（尚未打卡）'}"
+        f"🟢 上班打卡 {ci_icon}：{eip_in  or '—'}\n"
+        f"🔴 下班打卡 {co_icon}：{eip_out or '—'}"
     )
     _telegram_reply(chat_id, reply)
 
