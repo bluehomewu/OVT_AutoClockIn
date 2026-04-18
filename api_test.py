@@ -116,6 +116,27 @@ def _telegram_reply(chat_id: str, message: str):
         logging.warning("⚠️ Telegram 指令回覆發送失敗")
 
 
+def _telegram_delete_message(chat_id: str, message_id: int):
+    """刪除指定訊息（例如含明文密碼的指令訊息）。"""
+    if not TELEGRAM_TOKEN:
+        return
+    try:
+        payload = json.dumps({
+            "chat_id": chat_id,
+            "message_id": message_id,
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/deleteMessage",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        ctx = ssl.create_default_context()
+        with urllib.request.urlopen(req, timeout=10, context=ctx):
+            pass
+    except Exception:
+        logging.warning("⚠️ Telegram 訊息刪除失敗（訊息可能已過期或無權限）")
+
+
 def _ping_host(host: str) -> str:
     """Ping 一台主機，回傳單行結果字串（含延遲或失敗訊息）。"""
     param = ["-n", "1"] if platform.system().lower() == "windows" else ["-c", "1", "-W", "3"]
@@ -442,9 +463,13 @@ def _daily_credential_check():
         )
 
 
-def _handle_setpassword_command(chat_id: str, new_password: str):
-    """處理 /setpassword 指令：更新 account.config 中的密碼並同步至記憶體，然後驗證。"""
+def _handle_setpassword_command(chat_id: str, new_password: str, message_id: int = 0):
+    """處理 /setpassword 指令：刪除含明文密碼的原始訊息，更新密碼後回報驗證結果。"""
     global PASSWORD
+
+    # 立即刪除含明文密碼的使用者訊息，避免密碼留存於聊天記錄
+    if message_id:
+        _telegram_delete_message(chat_id, message_id)
 
     # 安全性：僅允許授權的 chat_id 操作
     if TELEGRAM_CHAT_ID and chat_id != TELEGRAM_CHAT_ID:
@@ -468,7 +493,6 @@ def _handle_setpassword_command(chat_id: str, new_password: str):
         _telegram_reply(chat_id, f"❌ 密碼更新失敗：{e}")
         return
 
-    _telegram_reply(chat_id, "✅ <b>密碼已成功更新至設定檔</b>\n⏳ 正在驗證新密碼...")
     if verify_login_credentials():
         _telegram_reply(chat_id, "✅ <b>新密碼驗證成功！</b>可正常登入 EIP。")
     else:
@@ -561,10 +585,11 @@ def telegram_polling_loop():
                 elif text.startswith("/setpassword"):
                     parts = text.split(maxsplit=1)
                     new_pw = parts[1].strip() if len(parts) > 1 else ""
+                    msg_id = msg.get("message_id", 0)
                     logging.info(f"📨 收到 /setpassword 指令（chat_id={chat_id}）")
                     threading.Thread(
                         target=_handle_setpassword_command,
-                        args=(chat_id, new_pw),
+                        args=(chat_id, new_pw, msg_id),
                         daemon=True,
                     ).start()
 
