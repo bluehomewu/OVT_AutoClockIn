@@ -68,6 +68,9 @@ except Exception:
 TELEGRAM_TOKEN: str = config.get("telegram", "token", fallback="")
 TELEGRAM_CHAT_ID: str = config.get("telegram", "chat_id", fallback="")
 
+# 每日帳號密碼驗證：記錄上次已檢查的日期，避免同日重複執行
+_last_credential_check_date: str = ""
+
 
 def send_telegram(message: str):
     """發送 Telegram 通知；若未設定 Token 或網路錯誤，靜默略過不影響打卡流程。"""
@@ -198,6 +201,8 @@ _HELP_TEXT = (
     "/clockin_test — 手動立即對測試站執行上班打卡，完成後自動顯示測試站打卡記錄\n"
     "\n"
     "/clockout_test — 手動立即對測試站執行下班打卡，完成後自動顯示測試站打卡記錄\n"
+    "\n"
+    "/setpassword &lt;新密碼&gt; — 更新 EIP 登入密碼（同步至設定檔與記憶體，並自動驗證）\n"
     "\n"
     "/help — 顯示此說明訊息"
 )
@@ -388,6 +393,88 @@ def _handle_clockout_test_command(chat_id: str):
     _handle_list_testsite_command(chat_id)
 
 
+def verify_login_credentials(base_url: str = None) -> bool:
+    """嘗試登入以驗證帳號密碼是否有效，不執行任何打卡動作。回傳 True/False。"""
+    target = base_url or PROD_BASE_URL
+    login_url = f"{target}/login/"
+    try:
+        requests.packages.urllib3.disable_warnings(
+            requests.packages.urllib3.exceptions.InsecureRequestWarning
+        )
+        s = requests.Session()
+        login_page = s.get(login_url, verify=False, timeout=REQUEST_TIMEOUT)
+        login_page.raise_for_status()
+        soup = BeautifulSoup(login_page.text, "html.parser")
+        token_el = soup.find("input", {"name": "csrfmiddlewaretoken"})
+        if not token_el:
+            return False
+        resp = s.post(
+            login_url,
+            data={"username": USERNAME, "password": PASSWORD,
+                  "csrfmiddlewaretoken": token_el["value"]},
+            headers={"Referer": login_url},
+            verify=False, timeout=REQUEST_TIMEOUT,
+        )
+        return "login" not in resp.url.lower() and "Please login" not in resp.text
+    except Exception:
+        return False
+
+
+def _daily_credential_check():
+    """每日登入驗證（於跨日或啟動時觸發）：失敗時透過 Telegram 發出密碼過期警告。
+    同一天內只執行一次，重複呼叫安全無副作用。
+    """
+    global _last_credential_check_date
+    today = date.today().isoformat()
+    if _last_credential_check_date == today:
+        return
+    _last_credential_check_date = today
+    logging.info("🔑 執行每日帳號密碼驗證...")
+    if verify_login_credentials():
+        logging.info("✅ 每日帳號密碼驗證成功。")
+    else:
+        logging.warning("⚠️ 每日帳號密碼驗證失敗！密碼可能已過期，請更新。")
+        send_telegram(
+            f"🔑 <b>帳號密碼驗證失敗</b>\n"
+            f"嘗試登入 EIP 失敗，密碼可能已過期或已被更改。\n"
+            f"請使用 /setpassword &lt;新密碼&gt; 指令更新密碼。\n"
+            f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+
+
+def _handle_setpassword_command(chat_id: str, new_password: str):
+    """處理 /setpassword 指令：更新 account.config 中的密碼並同步至記憶體，然後驗證。"""
+    global PASSWORD
+
+    # 安全性：僅允許授權的 chat_id 操作
+    if TELEGRAM_CHAT_ID and chat_id != TELEGRAM_CHAT_ID:
+        _telegram_reply(chat_id, "❌ 無授權操作。")
+        return
+
+    if not new_password:
+        _telegram_reply(chat_id, "❌ 請提供新密碼，格式：/setpassword &lt;新密碼&gt;")
+        return
+
+    try:
+        cfg = configparser.ConfigParser()
+        cfg.read(ACCOUNT_CONFIG)
+        cfg.set("credentials", "password", new_password)
+        with open(ACCOUNT_CONFIG, "w", encoding="utf-8") as f:
+            cfg.write(f)
+        PASSWORD = new_password
+        logging.info("🔑 密碼已透過 Telegram 指令更新（密碼不記錄於日誌）。")
+    except Exception as e:
+        logging.error(f"❌ 更新密碼失敗: {e}")
+        _telegram_reply(chat_id, f"❌ 密碼更新失敗：{e}")
+        return
+
+    _telegram_reply(chat_id, "✅ <b>密碼已成功更新至設定檔</b>\n⏳ 正在驗證新密碼...")
+    if verify_login_credentials():
+        _telegram_reply(chat_id, "✅ <b>新密碼驗證成功！</b>可正常登入 EIP。")
+    else:
+        _telegram_reply(chat_id, "⚠️ <b>警告：新密碼驗證失敗</b>\n請確認密碼是否輸入正確。")
+
+
 def telegram_polling_loop():
     """背景執行緒：long-poll Telegram getUpdates，處理指令。
     不影響打卡主流程，發生任何錯誤均自動重試。
@@ -468,6 +555,16 @@ def telegram_polling_loop():
                     threading.Thread(
                         target=_handle_clockout_command,
                         args=(chat_id,),
+                        daemon=True,
+                    ).start()
+
+                elif text.startswith("/setpassword"):
+                    parts = text.split(maxsplit=1)
+                    new_pw = parts[1].strip() if len(parts) > 1 else ""
+                    logging.info(f"📨 收到 /setpassword 指令（chat_id={chat_id}）")
+                    threading.Thread(
+                        target=_handle_setpassword_command,
+                        args=(chat_id, new_pw),
                         daemon=True,
                     ).start()
 
@@ -982,6 +1079,7 @@ def main_loop():
                     f"   -> 新隨機執行時間: {status['scheduled_out'].strftime('%H:%M:%S')}"
                 )
             logging.info("=" * 50)
+            threading.Thread(target=_daily_credential_check, daemon=True).start()
 
         if status.get("skipped"):
             # 每小時醒來時重新檢查 exceptions.txt，無需重啟服務即可生效
@@ -1134,6 +1232,9 @@ if __name__ == "__main__":
     if TELEGRAM_TOKEN:
         t = threading.Thread(target=telegram_polling_loop, daemon=True, name="tg-polling")
         t.start()
+
+    # 啟動時執行一次帳號密碼驗證
+    threading.Thread(target=_daily_credential_check, daemon=True).start()
 
     send_telegram(
         f"🤖 <b>OVT 打卡機器人已啟動</b>\n"
